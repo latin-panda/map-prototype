@@ -1,0 +1,7 @@
+/.idea/
+/.yarn/
+/dist/
+/node_modules/
+/.env
+/.pnp.cjs
+/.pnp.loader.mjs
