@@ -90,6 +90,15 @@ export class MapService {
     );
   };
 
+  static focusShapeLocation(mapRef: Map | undefined, shapeDataSource: VectorSource) {
+    if (!mapRef) {
+      return;
+    }
+
+    const { coordinates } = this.getGeometryContext(shapeDataSource);
+    mapRef.getView().animate({ center: coordinates[0], zoom: this.DEFAULT_ZOOM, duration: 1000 });
+  }
+
   static movePoint(oldPointLocation: Coordinate, newPointLocation: Coordinate, shapeDataSource: VectorSource) {
     const { geometry, coordinates } = this.getGeometryContext(shapeDataSource);
 

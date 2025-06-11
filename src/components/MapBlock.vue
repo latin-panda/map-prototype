@@ -305,6 +305,8 @@ const undo = () => {
 
 // @ts-ignore
 const focusCurrentLocation = () => MapService.focusCurrentLocation(mapRef.value);
+// @ts-ignore
+const focusShapeLocation = () => MapService.focusShapeLocation(mapRef.value, shapeDataSource);
 
 const getQuestionValue = () => {
   const geojsonFormat = new GeoJSON();
@@ -349,7 +351,7 @@ defineExpose({
       <button :class="{'active-btn': isFullScreen}" @click="() => isFullScreen=!isFullScreen">
         <img :src="fullScreenImg" style="width: 16px;" alt="Full-screen map"/>
       </button>
-      <button>
+      <button @click="focusShapeLocation">
         <img :src="fitScreenImg" alt="Fit my screen"/>
       </button>
       <button @click="focusCurrentLocation">
