@@ -13,25 +13,34 @@ import Fill from 'ol/style/Fill';
 import Stroke from 'ol/style/Stroke';
 import { Feature } from 'ol';
 import { fromLonLat, toLonLat } from 'ol/proj';
-import { closestOnSegment, type Coordinate } from 'ol/coordinate';
-import Polygon from 'ol/geom/Polygon';
+import { type Coordinate } from 'ol/coordinate';
 import Point from 'ol/geom/Point';
+import { MapService } from './MapService.ts';
+
+const addPointImg = `${ import.meta.env.BASE_URL }images/add-points.svg`;
+const editPointImg = `${ import.meta.env.BASE_URL }images/edit-points.svg`;
+const deletePointImg = `${ import.meta.env.BASE_URL }images/delete-points.svg`;
+const fullScreenImg = `${ import.meta.env.BASE_URL }images/full-screen.svg`;
+const findMyLocationImg = `${ import.meta.env.BASE_URL }images/find-my-location.svg`;
+const fitScreenImg = `${ import.meta.env.BASE_URL }images/fit-screen.svg`;
+const undoImg = `${ import.meta.env.BASE_URL }images/undo.svg`;
+const advancedImg = `${ import.meta.env.BASE_URL }images/advanced.svg`;
+const pinImg = `${ import.meta.env.BASE_URL }images/pin.svg`;
+const pasteImg = `${ import.meta.env.BASE_URL }images/paste.svg`;
 
 const BORDER_SIZE = 4;
 const PRIMARY_COLOR = '#3E9FCC';
 const AREA_COLOR = 'rgba(62, 159, 204, 0.2)';
 const SELECTED_COLOR = '#ffffff';
-const MIN_DISTANCE = 10;
-
-const addPointImg = `${import.meta.env.BASE_URL}images/add-points.svg`;
-const editPointImg = `${import.meta.env.BASE_URL}images/edit-points.svg`;
-const deletePointImg = `${import.meta.env.BASE_URL}images/delete-points.svg`;
 
 defineProps<{
   data: any[]; // Array of GeoJSON features (e.g., polygonForEdit)
 }>();
 
-const isAddMode = ref(false);
+const history = ref<Coordinate[][][]>([]);
+const isEditMode = ref(false);
+const isFullScreen = ref(false);
+const showPointDataSection = ref(false);
 const latitudeInput = ref('');
 const longitudeInput = ref('');
 
@@ -58,9 +67,10 @@ onMounted(() => {
 
   const map = createMap();
   map.set('data', mapContainer.value.dataset.data ? JSON.parse(mapContainer.value.dataset.data) : []);
+
   const modify = new Modify({
     source: shapeDataSource,
-    insertVertexCondition: () => isAddMode.value,
+    insertVertexCondition: () => isEditMode.value,
     style: new Style({
       image: new CircleStyle({ // Hides original hover point style.
         radius: 0,
@@ -69,7 +79,9 @@ onMounted(() => {
       }),
     }),
   });
-  modify.on('modifyend', (event) => selectPoint(event.mapBrowserEvent.coordinate));
+
+  modify.on('modifyend', onModifyEnd);
+  watchEditMode(modify);
   map.addInteraction(modify);
 
   map.on('click', (event) => selectPoint(event.coordinate));
@@ -91,15 +103,22 @@ onUnmounted(() => {
 watch(
     () => mapRef.value,
     (newMap) => {
-      if (newMap && shapeDataSource.getFeatures().length === 0) {
+      if (!newMap || shapeDataSource.getFeatures().length !== 0) {
+        return;
+      }
+
+      try {
         const geojsonFormat = new GeoJSON();
         const features = geojsonFormat.readFeatures(
             { type: 'FeatureCollection', features: newMap.get('data') || [] },
             { dataProjection: 'EPSG:4326', featureProjection: 'EPSG:3857' }
         );
         shapeDataSource.addFeatures(features);
-        const extent = shapeDataSource.getExtent();
-        newMap.getView().fit(extent, { padding: [ 50, 50, 50, 50 ], maxZoom: 18 });
+        // @ts-ignore
+        MapService.fitMap(newMap, shapeDataSource);
+        pushHistoryState(MapService.getGeometryContext(shapeDataSource).coordinates);
+      } catch (error) {
+        console.error(error);
       }
     },
     { immediate: true }
@@ -132,7 +151,7 @@ const createMap = () => {
     style: new Style({
       image: new CircleStyle({
         radius: 8,
-        fill: new Fill({ color: PRIMARY_COLOR }), // Yellow for hover
+        fill: new Fill({ color: PRIMARY_COLOR }),
         stroke: new Stroke({ color: '#FFF', width: 1 }),
       }),
     }),
@@ -149,75 +168,53 @@ const createMap = () => {
   });
 };
 
-const getShapeGeometry = (): Polygon | undefined => {
-  const shapes = shapeDataSource.getFeatures();
-  if (!shapes.length) {
-    console.log('No shape data available');
-    return;
+// @ts-ignore
+const onModifyEnd = (event) => {
+  try {
+    pushHistoryState(MapService.getGeometryContext(shapeDataSource).coordinates);
+    selectPoint(event.mapBrowserEvent.coordinate);
+  } catch (error) {
+    console.error(error);
   }
-
-  const geometry: Polygon | undefined = (shapes[ 0 ] as Feature<Polygon>)?.getGeometry();
-  if (geometry?.getType() !== 'Polygon') {
-    console.log('No geometry available');
-    return;
-  }
-
-  return geometry;
 };
 
-const isClosestShapePoint = (shapePoint: number[], point: number[]) => {
-  const distance = Math.sqrt(
-      Math.pow(shapePoint[ 0 ] - point[ 0 ], 2) +
-      Math.pow(shapePoint[ 1 ] - point[ 1 ], 2)
-  );
+const watchEditMode = (modify: Modify) => {
+  modify.setActive(isEditMode.value);
+  watch(isEditMode, (newValue) => modify.setActive(newValue));
+}
 
-  return distance <= MIN_DISTANCE;
-};
+const hoverPoint = (clickedPoint: Coordinate) => {
+  try {
+    hoverSource.clear();
 
-const hoverPoint = (clickedPoint: number[]) => {
-  hoverSource.clear();
-
-  const setHover = (pointToHover: Coordinate) => {
-    const pointFeature = new Feature(new Point(pointToHover));
-    hoverSource.addFeature(pointFeature);
-  };
-  const geometry = getShapeGeometry();
-  const coordinates = geometry?.getCoordinates()?.[ 0 ] ?? [];
-
-  if (!isAddMode.value) {
-    const shapePoint = coordinates.find((shapePoint) => isClosestShapePoint(shapePoint, clickedPoint));
-    shapePoint != null && setHover(shapePoint);
-    return;
-  }
-
-  for (let i = 0; i < coordinates.length - 1; i++) {
-    const startIdx = i;
-    const endIdx = i + 1;
-    if (endIdx === coordinates.length - 1) {
-      break;
-    }
-
-    const point = closestOnSegment(clickedPoint, [ coordinates[ startIdx ], coordinates[ endIdx ] ]);
-    if (point != null && isClosestShapePoint(point, clickedPoint)) {
-      setHover(point);
+    if (!isEditMode.value) {
+      const point = MapService.findPointInGeometry(clickedPoint, shapeDataSource);
+      MapService.setHover(point, hoverSource);
       return;
     }
+
+    const point = MapService.findPointInSegment(clickedPoint, shapeDataSource);
+    MapService.setHover(point, hoverSource);
+  } catch (error) {
+    console.log(error);
   }
 };
 
-const selectPoint = (clickedPoint: number[]) => {
-  hoverSource.clear();
-  const geometry = getShapeGeometry();
-  const coordinates = geometry?.getCoordinates()?.[ 0 ] ?? [];
-  const shapePoint = coordinates.find((shapePoint) => isClosestShapePoint(shapePoint, clickedPoint));
-  if (!shapePoint) {
-    return console.log('Point is not from the shape');
-  }
+const selectPoint = (clickedPoint: Coordinate) => {
+  try {
+    hoverSource.clear();
+    const shapePoint = MapService.findPointInGeometry(clickedPoint, shapeDataSource);
+    if (!shapePoint) {
+      return;
+    }
 
-  const [ lon, lat ] = toLonLat(shapePoint);
-  setPointSelected(lon, lat);
-  longitudeInput.value = lon.toString();
-  latitudeInput.value = lat.toString();
+    const [ lon, lat ] = toLonLat(shapePoint);
+    setPointSelected(lon, lat);
+    longitudeInput.value = lon.toString();
+    latitudeInput.value = lat.toString();
+  } catch (error) {
+    console.error(error);
+  }
 };
 
 const setPointSelected = (lon: number, lat: number) => {
@@ -227,38 +224,29 @@ const setPointSelected = (lon: number, lat: number) => {
     selectSource.removeFeature(selectedFeature.value as Feature<Point>);
   }
 
-  const newPointCoordinates = fromLonLat([ lon, lat ]);
-  const pointFeature = new Feature(new Point(newPointCoordinates));
+  const pointFeature = new Feature(new Point(fromLonLat([ lon, lat ])));
   selectSource.addFeature(pointFeature);
   selectedFeature.value = pointFeature;
 };
 
-const deletePoint = () => {
-  if (selectedPoint.value == null) {
-    return console.log('No selected point');
-  }
+const pushHistoryState = (coordinates: Coordinate[]) => {
+  history.value.push([ coordinates.slice() ]);
+};
 
-  const geometry = getShapeGeometry();
-  const coordinates = geometry?.getCoordinates()?.[ 0 ];
-  if (!coordinates || coordinates.length <= 3) {
-    return console.log('Not enough points. A geometry needs at least 3 points to be a shape.');
-  }
-
-  const [ selectedPointLon, selectedPointLat ] = fromLonLat([ selectedPoint.value.lon, selectedPoint.value.lat ]);
-  const updatedCoordinates = coordinates.filter(([ lon, lat ]) => lon !== selectedPointLon && lat !== selectedPointLat);
-  geometry.setCoordinates([ updatedCoordinates ]);
-
+const clearSelection = () => {
   if (selectedFeature.value) {
     selectSource.removeFeature(selectedFeature.value as Feature<Point>);
   }
+
   selectedPoint.value = null;
   selectedFeature.value = null;
   longitudeInput.value = '';
   latitudeInput.value = '';
+  hoverSource.clear();
 };
 
-const movePoint = (newLon: number, newLat: number) => {
-  if (isNaN(newLon) || isNaN(newLat)) {
+const deletePoint = () => {
+  if (!isEditMode.value) {
     return;
   }
 
@@ -266,29 +254,64 @@ const movePoint = (newLon: number, newLat: number) => {
     return console.log('No selected point');
   }
 
-  const geometry = getShapeGeometry();
-  const coordinates = geometry?.getCoordinates()?.[ 0 ] ?? [];
-  if (!coordinates.length) {
-    return console.log('No coordinates available');
+  try {
+    const point = [selectedPoint.value.lon, selectedPoint.value.lat];
+    MapService.deletePoint(point, shapeDataSource);
+    pushHistoryState(MapService.getGeometryContext(shapeDataSource).coordinates);
+    clearSelection();
+  } catch (error) {
+    console.error(error);
   }
-
-  const [ selectedPointLon, selectedPointLat ] = fromLonLat([ selectedPoint.value.lon, selectedPoint.value.lat ]);
-  geometry?.setCoordinates([ coordinates.map(([ lon, lat ]) => {
-    if (lon === selectedPointLon && lat === selectedPointLat) {
-      return fromLonLat([ newLon, newLat ]);
-    }
-
-    return [ lon, lat ];
-  }) ]);
-
-  setPointSelected(newLon, newLat);
 };
 
+const movePoint = (newLon: number, newLat: number) => {
+  if (isNaN(newLon) || isNaN(newLat) || !isEditMode.value) {
+    return;
+  }
+
+  try {
+    if (selectedPoint.value == null) {
+      throw new Error('No selected point');
+    }
+    const point = [selectedPoint.value.lon, selectedPoint.value.lat];
+    pushHistoryState(MapService.getGeometryContext(shapeDataSource).coordinates);
+    MapService.movePoint(point, [ newLon, newLat ], shapeDataSource);
+    setPointSelected(newLon, newLat);
+  } catch (error) {
+    console.error(error);
+  }
+};
+
+const undo = () => {
+  if (history.value.length <= 1) {
+    alert('No more actions to undo');
+    return;
+  }
+
+  try {
+    // Remove the current state
+    history.value.pop();
+    const previousState = history.value[ history.value.length - 1 ];
+    const geometry = MapService.getShapeGeometry(shapeDataSource);
+    if (previousState) {
+      geometry.setCoordinates(previousState);
+    }
+
+    clearSelection();
+  } catch (error) {
+    console.error(error);
+  }
+};
+
+// @ts-ignore
+const focusCurrentLocation = () => MapService.focusCurrentLocation(mapRef.value);
+
 const getQuestionValue = () => {
-  // TODO: needs work to return proper values
   const geojsonFormat = new GeoJSON();
   const features = shapeDataSource.getFeatures();
   console.log('Exporting geometries:', features.length);
+
+  // TODO: needs work to return proper values
   return geojsonFormat.writeFeatures(features, {
     dataProjection: 'EPSG:4326',
     featureProjection: 'EPSG:3857',
@@ -301,20 +324,51 @@ defineExpose({
 </script>
 
 <template>
-  <div class="map-block-component">
+  <div :class="{
+          'map-block-component': true,
+          'map-full-screen': isFullScreen,
+        }">
     <div
         ref="mapContainer"
         class="map-container"
         :data-data="JSON.stringify(data)"
     />
-
-    <div class="tool-bar">
-      <button :class="{'active-btn': isAddMode}" @click="() => isAddMode=true"><img :src="addPointImg" alt="Add Points"/></button>
-      <button :class="{'active-btn': !isAddMode}" @click="() => isAddMode=false"><img :src="editPointImg" alt="Edit Points"/></button>
-      <button @click="deletePoint"><img :src="deletePointImg" alt="Delete Point"/></button>
+    <div class="info-bar">
+      <div class="info-location">
+        <img v-if="latitudeInput.length || longitudeInput.length" style="margin-right: 10px" :src="pinImg" alt="Point data"/>
+        <span v-if="latitudeInput.length">Latitude: {{ latitudeInput }}&nbsp;</span>
+        <span v-if="longitudeInput.length">Longitude: {{ longitudeInput }}</span>
+      </div>
+      <button @click="showPointDataSection = !showPointDataSection">
+        <img :src="advancedImg" alt="Advanced actions" style="margin-right: 10px;"/>
+        <span>Advanced</span>
+      </button>
     </div>
 
-    <div class="inputs-container">
+    <div class="side-bar">
+      <button :class="{'active-btn': isFullScreen}" @click="() => isFullScreen=!isFullScreen">
+        <img :src="fullScreenImg" style="width: 16px;" alt="Full-screen map"/>
+      </button>
+      <button>
+        <img :src="fitScreenImg" alt="Fit my screen"/>
+      </button>
+      <button @click="focusCurrentLocation">
+        <img :src="findMyLocationImg" style="width: 20px;" alt="Find my location"/>
+      </button>
+    </div>
+
+    <div class="tool-bar">
+      <button :class="{'active-btn': !isEditMode}" @click="() => isEditMode=false">
+        <img :src="editPointImg" alt="Edit Points"/>
+      </button>
+      <button :class="{'active-btn': isEditMode}" @click="() => isEditMode=true">
+        <img :src="addPointImg" alt="Add Points"/>
+      </button>
+      <button @click="deletePoint"><img :src="deletePointImg" alt="Delete Point"/></button>
+      <button @click="undo"><img :src="undoImg" alt="Undo change"/></button>
+    </div>
+
+    <div v-if="showPointDataSection" class="inputs-container">
       <div class="box">
         <label for="accuracy">Accuracy</label>
         <input id="accuracy" type="text" disabled/>
@@ -325,8 +379,8 @@ defineExpose({
             id="latitude"
             type="text"
             v-model="latitudeInput"
-            :disabled="!selectedPoint"
-            @change="() => movePoint(Number(longitudeInput), Number(latitudeInput))" />
+            :disabled="!selectedPoint || !isEditMode"
+            @change="() => movePoint(Number(longitudeInput), Number(latitudeInput))"/>
       </div>
       <div class="box">
         <label for="altitude">Altitude</label>
@@ -338,9 +392,13 @@ defineExpose({
             id="longitude"
             type="text"
             v-model="longitudeInput"
-            :disabled="!selectedPoint"
-            @change="() => movePoint(Number(longitudeInput), Number(latitudeInput))" />
+            :disabled="!selectedPoint || !isEditMode"
+            @change="() => movePoint(Number(longitudeInput), Number(latitudeInput))"/>
       </div>
+
+      <a style="text-decoration: none; cursor:pointer; font-size: 14px; color:#6B7280; margin-top:10px">
+        <img style="margin-right: 10px" :src="pasteImg" alt="Paste data"/><strong>Paste location data</strong>
+      </a>
     </div>
   </div>
 </template>
@@ -353,6 +411,8 @@ defineExpose({
 .map-container {
   width: 100%;
   height: 400px;
+  border-radius: 6px 6px 0 0;
+  overflow: hidden;
 }
 
 .inputs-container {
@@ -369,15 +429,17 @@ defineExpose({
   overflow: hidden;
   background-color: #f9fafb;
   flex: 1 1 calc(50% - 1rem);
-  height: 48px;
+  height: 36px;
   min-width: 250px;
 }
 
 .inputs-container label {
-  background-color: #e5e7eb;
+  background-color: #F3F4F6;
   padding: 0.75rem 1rem;
   color: #374151;
   font-weight: 500;
+  font-size: 14px;
+  min-width: 62px;
   display: flex;
   align-items: center;
   border-right: 1px solid #d1d5db;
@@ -387,7 +449,7 @@ defineExpose({
 .inputs-container input {
   border: none;
   padding: 0.75rem 1rem;
-  font-size: 1rem;
+  font-size: 14px;
   width: 100%;
   color: #374151;
   background-color: #fff;
@@ -416,30 +478,86 @@ defineExpose({
   box-shadow: rgba(0, 0, 0, 0.3) 0px 0px 10px;
   top: 329px;
   left: 18px;
+
+  button {
+    border-radius: 6px;
+  }
 }
 
-.tool-bar button {
-  vertical-align: middle;
+.side-bar {
+  position: absolute;
+  right: 18px;
+  top: 20px;
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: center;
+  background: #fff;
+  overflow: hidden;
+  border-radius: 6px;
+  box-shadow: rgba(0, 0, 0, 0.3) 0px 0px 10px;
 }
 
-.tool-bar button,
-.tool-bar button:hover,
-.tool-bar button:focus,
-.tool-bar button:active {
-  border: none;
-  background: transparent;
-  outline: none;
-  cursor: pointer;
-  height: 38px;
-  width: 38px;
+.side-bar,
+.tool-bar {
+  button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 38px;
+    width: 38px;
+    font-size: 24px;
+    font-weight: 300;
+    cursor: pointer;
+  }
+
+  button,
+  button:hover,
+  button:active,
+  button:focus {
+    border: none;
+    background: #fff;
+    outline: none;
+  }
+
+  button.active-btn {
+    background: rgba(233, 248, 255, 1);
+  }
+
+  button:hover {
+    background: #f1f3f6;
+  }
 }
 
-.tool-bar button.active-btn {
-  background: rgba(233, 248, 255, 1);
-}
+.info-bar {
+  height: fit-content;
+  background: #F8FAFC;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  border-radius: 0 0 6px 6px;
+  padding: 15px 23px;
+  font-size: 14px;
 
-.tool-bar button:active {
-  background: #f1f3f6;
+  .info-location {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    flex-grow: 2;
+  }
+
+  button {
+    font-size: 14px;
+    border-radius: 6px;
+    border: 1px solid #64748B;
+    padding: 10px 20px;
+    background: #FFFFFF;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
 }
 
 /** override map ol **/
@@ -458,33 +576,68 @@ defineExpose({
   flex-wrap: nowrap;
   align-items: center;
   box-shadow: rgba(0, 0, 0, 0.3) 0px 0px 10px;
-}
-
-.ol-zoom button,
-.ol-zoom button:hover,
-.ol-zoom button:focus,
-.ol-zoom button:active {
-  height: 38px;
-  width: 38px;
-  border-radius: 6px;
-  border: none;
   background: #fff;
-  font-size: 24px;
-  font-weight: 300;
-  cursor: pointer;
+  border-radius: 6px;
+  overflow: hidden;
+
+  button,
+  button:hover,
+  button:focus,
+  button:active {
+    height: 38px;
+    width: 38px;
+    border: none;
+    background: #fff;
+    font-size: 24px;
+    font-weight: 300;
+    cursor: pointer;
+  }
+
+  button:hover {
+    background: #f1f3f6;
+  }
 }
 
-.ol-zoom button:active {
-  background: #f1f3f6;
+.side-bar,
+.ol-zoom {
+  button {
+    border-radius: unset;
+  }
+
+  button:not(:first-child) {
+    border-top: 1px solid #d1d5db;
+  }
 }
 
-.ol-zoom button:first-child {
-  border-radius: 6px 6px 0 0;
+.map-full-screen {
+  .map-container {
+    position: fixed;
+    width: 100vw;
+    height: 100vh;
+    top: 0;
+    left: 0;
+  }
+
+  .tool-bar,
+  .side-bar,
+  .ol-zoom {
+    position: fixed;
+  }
+
+  .tool-bar,
+  .ol-zoom {
+    top: unset;
+    bottom: 20px;
+  }
 }
 
-.ol-zoom button:not(:first-child) {
-  border-radius: 0 0 6px 6px;
-  border-top: 1px solid #d1d5db;
-}
 
+@media (max-width: 600px) {
+  .info-bar,
+  .info-location {
+    align-items: center;
+    flex-direction: column;
+    gap: 15px;
+  }
+}
 </style>
