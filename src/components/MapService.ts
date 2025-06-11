@@ -7,7 +7,7 @@ import Polygon from 'ol/geom/Polygon';
 import Point from 'ol/geom/Point';
 
 export class MapService {
-  static readonly MIN_DISTANCE = 10;
+  static readonly MIN_DISTANCE = 6;
   static readonly DEFAULT_ZOOM = 16;
 
   static fitMap(map: Map, shapeDataSource: VectorSource) {
@@ -58,7 +58,7 @@ export class MapService {
 
     for (let i = 0; i < coordinates.length - 1; i++) {
       const startIdx = i;
-      const endIdx = i + 1;
+      const endIdx = (i + 1) % (coordinates.length - 1); // Connect last point to first
       if (endIdx === coordinates.length - 1) {
         break;
       }

@@ -80,6 +80,8 @@ onMounted(() => {
     }),
   });
 
+  modify.on('modifystart', () => clearSelection());
+
   modify.on('modifyend', onModifyEnd);
   watchEditMode(modify);
   map.addInteraction(modify);
