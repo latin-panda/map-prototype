@@ -28,7 +28,7 @@ const advancedImg = `${ import.meta.env.BASE_URL }images/advanced.svg`;
 const pinImg = `${ import.meta.env.BASE_URL }images/pin.svg`;
 const pasteImg = `${ import.meta.env.BASE_URL }images/paste.svg`;
 
-const BORDER_SIZE = 4;
+const BORDER_SIZE = 2;
 const VIEW_MODE_LINE_COLOR = '#3E9FCC';
 const EDIT_MODE_LINE_COLOR = '#FF944D';
 const REVIEW_MODE_AREA_COLOR = 'rgba(62, 159, 204, 0.2)';
@@ -214,6 +214,7 @@ const onModifyEnd = (event) => {
 const watchEditMode = (modify: Modify) => {
   watch(isEditMode, (newValue) => {
     modify.setActive(newValue);
+    clearSelection();
     updateFeatureStyles();
   });
 }
