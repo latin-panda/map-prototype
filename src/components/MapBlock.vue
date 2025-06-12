@@ -29,8 +29,10 @@ const pinImg = `${ import.meta.env.BASE_URL }images/pin.svg`;
 const pasteImg = `${ import.meta.env.BASE_URL }images/paste.svg`;
 
 const BORDER_SIZE = 4;
-const PRIMARY_COLOR = '#3E9FCC';
-const AREA_COLOR = 'rgba(62, 159, 204, 0.2)';
+const VIEW_MODE_LINE_COLOR = '#3E9FCC';
+const EDIT_MODE_LINE_COLOR = '#FF944D';
+const REVIEW_MODE_AREA_COLOR = 'rgba(62, 159, 204, 0.2)';
+const EDIT_MODE_AREA_COLOR = 'rgba(255, 148, 77, 0.2)';
 const SELECTED_COLOR = '#ffffff';
 
 defineProps<{
@@ -59,6 +61,55 @@ const selectedFeature = ref<Feature<Point> | null>(null);
 const selectSource = new VectorSource();
 const hoverSource = new VectorSource();
 
+const editModePolygonStyle = new Style({
+  fill: new Fill({ color: EDIT_MODE_AREA_COLOR }),
+  stroke: new Stroke({ color: EDIT_MODE_LINE_COLOR, width: BORDER_SIZE, lineDash: [5, 5] }),
+});
+
+const viewModePolygonStyle = new Style({
+  fill: new Fill({ color: REVIEW_MODE_AREA_COLOR }),
+  stroke: new Stroke({ color: VIEW_MODE_LINE_COLOR, width: BORDER_SIZE }),
+});
+
+const editModeSelectPointStyle = new Style({
+  image: new CircleStyle({
+    radius: 11,
+    fill: new Fill({ color: SELECTED_COLOR }),
+    stroke: new Stroke({ color: EDIT_MODE_LINE_COLOR, width: BORDER_SIZE }),
+  }),
+});
+
+const viewModeSelectPointStyle = new Style({
+  image: new CircleStyle({
+    radius: 11,
+    fill: new Fill({ color: SELECTED_COLOR }),
+    stroke: new Stroke({ color: VIEW_MODE_LINE_COLOR, width: BORDER_SIZE }),
+  }),
+});
+
+const editModeHoverPointStyle = new Style({
+  image: new CircleStyle({
+    radius: 8,
+    fill: new Fill({ color: EDIT_MODE_LINE_COLOR }),
+    stroke: new Stroke({ color: '#FFF', width: 1 }),
+  }),
+});
+
+const viewModeHoverPointStyle = new Style({
+  image: new CircleStyle({
+    radius: 8,
+    fill: new Fill({ color: VIEW_MODE_LINE_COLOR }),
+    stroke: new Stroke({ color: '#FFF', width: 1 }),
+  }),
+});
+
+const defaultTransparentPoint = new Style({
+  image: new CircleStyle({
+    radius: 0,
+    stroke: new Stroke({ color: 'rgba(0, 0, 0, 0)', width: 0 }),
+  }),
+});
+
 // Initialize map
 onMounted(() => {
   if (!mapContainer.value) {
@@ -71,25 +122,30 @@ onMounted(() => {
   const modify = new Modify({
     source: shapeDataSource,
     insertVertexCondition: () => isEditMode.value,
-    style: new Style({
-      image: new CircleStyle({ // Hides original hover point style.
-        radius: 0,
-        fill: new Fill({ color: 'rgba(0, 0, 0, 0)' }),
-        stroke: new Stroke({ color: 'rgba(0, 0, 0, 0)', width: 0 }),
-      }),
-    }),
+    style: defaultTransparentPoint,
   });
 
   modify.on('modifystart', () => clearSelection());
-
   modify.on('modifyend', onModifyEnd);
+  modify.setActive(isEditMode.value);
   watchEditMode(modify);
-  map.addInteraction(modify);
 
+  map.addInteraction(modify);
   map.on('click', (event) => selectPoint(event.coordinate));
   map.on('pointermove', (event) => hoverPoint(event.coordinate));
 
   mapRef.value = map;
+
+  shapeDataSource.on('addfeature', (event) => applyShapeStyle(event.feature));
+  hoverSource.on('addfeature', (event) => applyHoverPointStyle(event.feature));
+  selectSource.on('addfeature', (event) => applySelectPointStyle(event.feature));
+
+  shapeDataSource.on('removefeature', (event) => event.feature?.setStyle(undefined));
+  selectSource.on('removefeature', (event) => event.feature?.setStyle(undefined));
+  hoverSource.on('removefeature', (event) => event.feature?.setStyle(undefined));
+
+  // Initial styles
+  updateFeatureStyles();
 });
 
 onUnmounted(() => {
@@ -118,7 +174,9 @@ watch(
         shapeDataSource.addFeatures(features);
         // @ts-ignore
         MapService.fitMap(newMap, shapeDataSource);
+
         pushHistoryState(MapService.getGeometryContext(shapeDataSource).coordinates);
+        updateFeatureStyles(); // TODO: is it really necessary here?
       } catch (error) {
         console.error(error);
       }
@@ -128,36 +186,9 @@ watch(
 
 const createMap = () => {
   const mapProviderLayer = new TileLayer({ source: new OSM() });
-
-  const areaLayer = new VectorLayer({
-    source: shapeDataSource,
-    style: new Style({
-      fill: new Fill({ color: AREA_COLOR }),
-      stroke: new Stroke({ color: PRIMARY_COLOR, width: BORDER_SIZE }),
-    }),
-  });
-
-  const selectLayer = new VectorLayer({
-    source: selectSource,
-    style: new Style({
-      image: new CircleStyle({
-        radius: 11,
-        fill: new Fill({ color: SELECTED_COLOR }),
-        stroke: new Stroke({ color: PRIMARY_COLOR, width: BORDER_SIZE }),
-      }),
-    }),
-  });
-
-  const hoverLayer = new VectorLayer({
-    source: hoverSource,
-    style: new Style({
-      image: new CircleStyle({
-        radius: 8,
-        fill: new Fill({ color: PRIMARY_COLOR }),
-        stroke: new Stroke({ color: '#FFF', width: 1 }),
-      }),
-    }),
-  });
+  const areaLayer = new VectorLayer({ source: shapeDataSource });
+  const selectLayer = new VectorLayer({ source: selectSource });
+  const hoverLayer = new VectorLayer({ source: hoverSource });
 
   return new Map({
     target: mapContainer.value,
@@ -181,8 +212,10 @@ const onModifyEnd = (event) => {
 };
 
 const watchEditMode = (modify: Modify) => {
-  modify.setActive(isEditMode.value);
-  watch(isEditMode, (newValue) => modify.setActive(newValue));
+  watch(isEditMode, (newValue) => {
+    modify.setActive(newValue);
+    updateFeatureStyles();
+  });
 }
 
 const hoverPoint = (clickedPoint: Coordinate) => {
@@ -322,21 +355,33 @@ const getQuestionValue = () => {
   });
 };
 
+const updateFeatureStyles = () => {
+  shapeDataSource.getFeatures().forEach(applyShapeStyle);
+  hoverSource.getFeatures().forEach(applyHoverPointStyle);
+  selectSource.getFeatures().forEach(applySelectPointStyle);
+};
+
+const applyShapeStyle = (feature: Feature | undefined) => {
+  feature?.setStyle(isEditMode.value ? editModePolygonStyle : viewModePolygonStyle);
+};
+
+const applySelectPointStyle = (feature: Feature | undefined) => {
+  feature?.setStyle(isEditMode.value ? editModeSelectPointStyle : viewModeSelectPointStyle);
+};
+
+const applyHoverPointStyle = (feature: Feature | undefined) => {
+  feature?.setStyle(isEditMode.value ? editModeHoverPointStyle : viewModeHoverPointStyle);
+};
+
 defineExpose({
   getQuestionValue,
 });
 </script>
 
 <template>
-  <div :class="{
-          'map-block-component': true,
-          'map-full-screen': isFullScreen,
-        }">
-    <div
-        ref="mapContainer"
-        class="map-container"
-        :data-data="JSON.stringify(data)"
-    />
+  <div :class="{ 'map-block-component': true, 'map-full-screen': isFullScreen }">
+    <div ref="mapContainer" class="map-container" :data-data="JSON.stringify(data)" />
+
     <div class="info-bar">
       <div class="info-location">
         <img v-if="latitudeInput.length || longitudeInput.length" style="margin-right: 10px" :src="pinImg" alt="Point data"/>
@@ -368,8 +413,8 @@ defineExpose({
       <button :class="{'active-btn': isEditMode}" @click="() => isEditMode=true">
         <img :src="addPointImg" alt="Add Points"/>
       </button>
-      <button @click="deletePoint"><img :src="deletePointImg" alt="Delete Point"/></button>
-      <button @click="undo"><img :src="undoImg" alt="Undo change"/></button>
+      <button @click="deletePoint" :disabled="!isEditMode"><img :src="deletePointImg" alt="Delete Point"/></button>
+      <button @click="undo" :disabled="!isEditMode"><img :src="undoImg" alt="Undo change"/></button>
     </div>
 
     <div v-if="showPointDataSection" class="inputs-container">
@@ -400,8 +445,9 @@ defineExpose({
         <input id="altitude" type="text" disabled/>
       </div>
 
-      <a style="text-decoration: none; cursor:pointer; font-size: 14px; color:#6B7280; margin-top:10px">
-        <img style="margin-right: 10px" :src="pasteImg" alt="Paste data"/><strong>Paste location data</strong>
+      <a :class="{ 'paste-location-anchor': true, 'disabled': !isEditMode }">
+        <img style="margin-right: 10px" :src="pasteImg" alt="Paste data"/>
+        <strong>Paste location data</strong>
       </a>
     </div>
   </div>
@@ -424,47 +470,59 @@ defineExpose({
   flex-wrap: wrap;
   gap: 1rem;
   margin: 1rem auto;
-}
 
-.inputs-container .box {
-  display: flex;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  overflow: hidden;
-  background-color: #f9fafb;
-  flex: 1 1 calc(50% - 1rem);
-  height: 36px;
-  min-width: 250px;
-}
+  .paste-location-anchor {
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 14px;
+    color:#6B7280;
+    margin-top:10px;
+  }
 
-.inputs-container label {
-  background-color: #F3F4F6;
-  padding: 0.75rem 1rem;
-  color: #374151;
-  font-weight: 500;
-  font-size: 14px;
-  min-width: 62px;
-  display: flex;
-  align-items: center;
-  border-right: 1px solid #d1d5db;
-  white-space: nowrap;
-}
+  .paste-location-anchor.disabled {
+    cursor: not-allowed;
+  }
 
-.inputs-container input {
-  border: none;
-  padding: 0.75rem 1rem;
-  font-size: 14px;
-  width: 100%;
-  color: #374151;
-  background-color: #fff;
-}
+  .box {
+    display: flex;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    overflow: hidden;
+    background-color: #f9fafb;
+    flex: 1 1 calc(50% - 1rem);
+    height: 36px;
+    min-width: 250px;
+  }
 
-.inputs-container input:disabled {
-  background-color: #f9fafb;
-}
+  label {
+    background-color: #F3F4F6;
+    padding: 0.75rem 1rem;
+    color: #374151;
+    font-weight: 500;
+    font-size: 14px;
+    min-width: 62px;
+    display: flex;
+    align-items: center;
+    border-right: 1px solid #d1d5db;
+    white-space: nowrap;
+  }
 
-.inputs-container input:focus-visible {
-  outline: none;
+  input {
+    border: none;
+    padding: 0.75rem 1rem;
+    font-size: 14px;
+    width: 100%;
+    color: #374151;
+    background-color: #fff;
+  }
+
+  input:disabled {
+    background-color: #f9fafb;
+  }
+
+  input:focus-visible {
+    outline: none;
+  }
 }
 
 .tool-bar {
@@ -530,6 +588,10 @@ defineExpose({
 
   button:hover {
     background: #f1f3f6;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
   }
 }
 
@@ -634,7 +696,6 @@ defineExpose({
     bottom: 20px;
   }
 }
-
 
 @media (max-width: 600px) {
   .info-bar,
