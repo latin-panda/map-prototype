@@ -374,10 +374,6 @@ defineExpose({
 
     <div v-if="showPointDataSection" class="inputs-container">
       <div class="box">
-        <label for="accuracy">Accuracy</label>
-        <input id="accuracy" type="text" disabled/>
-      </div>
-      <div class="box">
         <label for="latitude">Latitude</label>
         <input
             id="latitude"
@@ -387,8 +383,8 @@ defineExpose({
             @change="() => movePoint(Number(longitudeInput), Number(latitudeInput))"/>
       </div>
       <div class="box">
-        <label for="altitude">Altitude</label>
-        <input id="altitude" type="text" disabled/>
+        <label for="accuracy">Accuracy</label>
+        <input id="accuracy" type="text" disabled/>
       </div>
       <div class="box">
         <label for="longitude">Longitude</label>
@@ -398,6 +394,10 @@ defineExpose({
             v-model="longitudeInput"
             :disabled="!selectedPoint || !isEditMode"
             @change="() => movePoint(Number(longitudeInput), Number(latitudeInput))"/>
+      </div>
+      <div class="box">
+        <label for="altitude">Altitude</label>
+        <input id="altitude" type="text" disabled/>
       </div>
 
       <a style="text-decoration: none; cursor:pointer; font-size: 14px; color:#6B7280; margin-top:10px">
